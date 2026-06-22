@@ -1,0 +1,182 @@
+name: "\U0001F916 Análisis de Issues con Claude AI"
+
+on:
+  issues:
+    types: [opened, edited]
+
+jobs:
+  analyze-issue:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+
+    steps:
+      - name: Ensure project labels exist
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = [
+              { name: 'bug',           color: 'd73a4a', description: 'Comportamiento inesperado o error en el juego' },
+              { name: 'enhancement',   color: 'a2eeef', description: 'Nueva funcionalidad o mejora' },
+              { name: 'question',      color: 'd876e3', description: 'Pregunta o solicitud de información' },
+              { name: 'performance',   color: 'ffa500', description: 'Problema de rendimiento o velocidad' },
+              { name: 'visual',        color: '0075ca', description: 'Problema visual o de interfaz gráfica' },
+              { name: 'game-logic',    color: '7057ff', description: 'Mecánicas o lógica del juego' },
+              { name: 'documentation', color: '006b75', description: 'Mejora o corrección de documentación' },
+              { name: 'invalid',       color: 'e4e669', description: 'Issue inválido o fuera de alcance' },
+              { name: 'duplicate',     color: 'cfd3d7', description: 'Issue duplicado' },
+            ];
+
+            for (const label of labels) {
+              try {
+                await github.rest.issues.createLabel({
+                  owner: context.repo.owner,
+                  repo:  context.repo.repo,
+                  name:  label.name,
+                  color: label.color,
+                  description: label.description,
+                });
+              } catch (e) {
+                if (e.status !== 422) {
+                  console.log(`Advertencia al crear label "${label.name}": ${e.message}`);
+                }
+              }
+            }
+
+      - name: Remove previous auto-analysis comment (on edit)
+        if: github.event.action == 'edited'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const comments = await github.rest.issues.listComments({
+              owner:        context.repo.owner,
+              repo:         context.repo.repo,
+              issue_number: context.payload.issue.number,
+              per_page:     100,
+            });
+
+            const SIGNATURE = '<!-- claude-auto-analysis -->';
+            for (const comment of comments.data) {
+              if (comment.body.includes(SIGNATURE)) {
+                await github.rest.issues.deleteComment({
+                  owner:      context.repo.owner,
+                  repo:       context.repo.repo,
+                  comment_id: comment.id,
+                });
+                console.log(`Comentario previo eliminado: #${comment.id}`);
+              }
+            }
+
+      - name: Analyze issue with Claude AI and apply labels
+        uses: actions/github-script@v7
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        with:
+          script: |
+            if (!process.env.CLAUDE_CODE_OAUTH_TOKEN) {
+              core.setFailed('CLAUDE_CODE_OAUTH_TOKEN no está configurado en los secrets del repositorio.');
+              return;
+            }
+
+            const issueTitle  = context.payload.issue.title;
+            const issueBody   = context.payload.issue.body || '(sin descripción)';
+            const issueNumber = context.payload.issue.number;
+            const isEdited    = context.payload.action === 'edited';
+
+            const availableLabels = [
+              'bug', 'enhancement', 'question', 'performance',
+              'visual', 'game-logic', 'documentation', 'invalid', 'duplicate',
+            ];
+
+            const prompt = `Eres un experto en análisis de issues de GitHub para un juego de Tetris implementado en HTML5 Canvas + JavaScript vanilla (sin frameworks ni dependencias).
+
+Arquitectura del proyecto:
+- game.js   → lógica principal, renderizado en Canvas 2D, piezas, rotación, colisiones, puntuación
+- index.html → estructura HTML, dos <canvas> (tablero 300×600, preview 120×120)
+- style.css  → estilos visuales
+- Sin bundler, sin tests automatizados
+
+Issue a analizar:
+**Título:** ${issueTitle}
+**Descripción:** ${issueBody}
+
+Tarea:
+1. Determina la naturaleza del issue y elige los labels más apropiados de esta lista exacta: ${availableLabels.join(', ')}
+2. Genera un diagnóstico técnico detallado en español con formato Markdown.
+
+El diagnóstico debe incluir estas secciones:
+- **Resumen del problema** reportado
+- **Archivos/áreas probablemente afectados** (game.js, index.html, style.css y qué parte)
+- **Posibles causas técnicas**
+- **Sugerencias de implementación** para resolver el issue
+- **Complejidad estimada**: Baja / Media / Alta (con justificación breve)
+
+Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional ni bloques de código:
+{"labels":["label1"],"diagnosis":"## Diagnóstico\\n..."}`;
+
+            const apiResponse = await fetch('https://api.anthropic.com/v1/messages', {
+              method: 'POST',
+              headers: {
+                'Content-Type':      'application/json',
+                'Authorization':     `Bearer ${process.env.CLAUDE_CODE_OAUTH_TOKEN}`,
+                'anthropic-version': '2023-06-01',
+              },
+              body: JSON.stringify({
+                model:      'claude-haiku-4-5-20251001',
+                max_tokens: 1500,
+                messages:   [{ role: 'user', content: prompt }],
+              }),
+            });
+
+            if (!apiResponse.ok) {
+              const errText = await apiResponse.text();
+              core.setFailed(`Error en Anthropic API (${apiResponse.status}): ${errText}`);
+              return;
+            }
+
+            const apiData = await apiResponse.json();
+            const rawText = apiData.content[0].text.trim();
+
+            let analysis;
+            try {
+              const jsonMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)```/);
+              analysis = JSON.parse(jsonMatch ? jsonMatch[1].trim() : rawText);
+            } catch (e) {
+              core.setFailed(`No se pudo parsear la respuesta de Claude como JSON.\nRespuesta: ${rawText}`);
+              return;
+            }
+
+            // Apply labels (only valid ones from the allowed list)
+            const validLabels = (analysis.labels || []).filter(l => availableLabels.includes(l));
+            if (validLabels.length > 0) {
+              await github.rest.issues.addLabels({
+                owner:        context.repo.owner,
+                repo:         context.repo.repo,
+                issue_number: issueNumber,
+                labels:       validLabels,
+              });
+              console.log(`Labels aplicados: ${validLabels.join(', ')}`);
+            } else {
+              console.log('No se aplicaron labels.');
+            }
+
+            // Post diagnosis comment
+            const actionText  = isEdited ? 'editado' : 'creado';
+            const commentBody = `<!-- claude-auto-analysis -->
+## \u{1F916} Diagnóstico Automático — Claude AI
+
+> *Análisis generado automáticamente al ${actionText} el issue · modelo \`claude-haiku-4-5\`*
+
+${analysis.diagnosis}
+
+---
+<sub>Labels sugeridos: ${validLabels.length > 0 ? validLabels.map(l => '`' + l + '`').join(' ') : '_ninguno_'} · [Ver workflow](https://github.com/${context.repo.owner}/${context.repo.repo}/actions)</sub>`;
+
+            await github.rest.issues.createComment({
+              owner:        context.repo.owner,
+              repo:         context.repo.repo,
+              issue_number: issueNumber,
+              body:         commentBody,
+            });
+
+            console.log(`Diagnóstico publicado en issue #${issueNumber}`);
