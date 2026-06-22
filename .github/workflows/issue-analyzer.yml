@@ -1,4 +1,4 @@
-name: "\U0001F916 Análisis de Issues con Claude AI"
+name: "🤖 Análisis de Issues con Claude AI"
 
 on:
   issues:
@@ -90,39 +90,39 @@ jobs:
 
             const prompt = `Eres un experto en análisis de issues de GitHub para un juego de Tetris implementado en HTML5 Canvas + JavaScript vanilla (sin frameworks ni dependencias).
 
-Arquitectura del proyecto:
-- game.js   → lógica principal, renderizado en Canvas 2D, piezas, rotación, colisiones, puntuación
-- index.html → estructura HTML, dos <canvas> (tablero 300×600, preview 120×120)
-- style.css  → estilos visuales
-- Sin bundler, sin tests automatizados
+            Arquitectura del proyecto:
+            - game.js   → lógica principal, renderizado en Canvas 2D, piezas, rotación, colisiones, puntuación
+            - index.html → estructura HTML, dos <canvas> (tablero 300×600, preview 120×120)
+            - style.css  → estilos visuales
+            - Sin bundler, sin tests automatizados
 
-Issue a analizar:
-**Título:** ${issueTitle}
-**Descripción:** ${issueBody}
+            Issue a analizar:
+            **Título:** ${issueTitle}
+            **Descripción:** ${issueBody}
 
-Tarea:
-1. Determina la naturaleza del issue y elige los labels más apropiados de esta lista exacta: ${availableLabels.join(', ')}
-2. Genera un diagnóstico técnico detallado en español con formato Markdown.
+            Tarea:
+            1. Determina la naturaleza del issue y elige los labels más apropiados de esta lista exacta: ${availableLabels.join(', ')}
+            2. Genera un diagnóstico técnico detallado en español con formato Markdown.
 
-El diagnóstico debe incluir estas secciones:
-- **Resumen del problema** reportado
-- **Archivos/áreas probablemente afectados** (game.js, index.html, style.css y qué parte)
-- **Posibles causas técnicas**
-- **Sugerencias de implementación** para resolver el issue
-- **Complejidad estimada**: Baja / Media / Alta (con justificación breve)
+            El diagnóstico debe incluir estas secciones:
+            - **Resumen del problema** reportado
+            - **Archivos/áreas probablemente afectados** (game.js, index.html, style.css y qué parte)
+            - **Posibles causas técnicas**
+            - **Sugerencias de implementación** para resolver el issue
+            - **Complejidad estimada**: Baja / Media / Alta (con justificación breve)
 
-Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional ni bloques de código:
-{"labels":["label1"],"diagnosis":"## Diagnóstico\\n..."}`;
+            Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional ni bloques de código:
+            {"labels":["label1"],"diagnosis":"## Diagnóstico\\n..."}`;
 
-            const apiResponse = await fetch('https://api.anthropic.com/v1/messages', {
+            const apiResponse = await fetch('[https://api.anthropic.com/v1/messages](https://api.anthropic.com/v1/messages)', {
               method: 'POST',
               headers: {
                 'Content-Type':      'application/json',
-                'Authorization':     `Bearer ${process.env.CLAUDE_CODE_OAUTH_TOKEN}`,
+                'x-api-key':         process.env.CLAUDE_CODE_OAUTH_TOKEN,
                 'anthropic-version': '2023-06-01',
               },
               body: JSON.stringify({
-                model:      'claude-haiku-4-5-20251001',
+                model:      'claude-3-5-haiku-latest',
                 max_tokens: 1500,
                 messages:   [{ role: 'user', content: prompt }],
               }),
@@ -139,14 +139,16 @@ Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional ni bloques 
 
             let analysis;
             try {
-              const jsonMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)```/);
+              // Usamos escapes hexadecimales para representar las tres comillas invertidas (\x60\x60\x60)
+              // para evitar que el renderizado de Markdown del editor o de GitHub rompa el flujo de código.
+              const jsonMatch = rawText.match(/\x60\x60\x60(?:json)?\s*([\s\S]*?)\x60\x60\x60/);
               analysis = JSON.parse(jsonMatch ? jsonMatch[1].trim() : rawText);
             } catch (e) {
               core.setFailed(`No se pudo parsear la respuesta de Claude como JSON.\nRespuesta: ${rawText}`);
               return;
             }
 
-            // Apply labels (only valid ones from the allowed list)
+            // Aplicar etiquetas válidas de la lista permitida
             const validLabels = (analysis.labels || []).filter(l => availableLabels.includes(l));
             if (validLabels.length > 0) {
               await github.rest.issues.addLabels({
@@ -160,17 +162,17 @@ Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional ni bloques 
               console.log('No se aplicaron labels.');
             }
 
-            // Post diagnosis comment
+            // Publicar el comentario con el diagnóstico en el issue
             const actionText  = isEdited ? 'editado' : 'creado';
             const commentBody = `<!-- claude-auto-analysis -->
-## \u{1F916} Diagnóstico Automático — Claude AI
+            ## 🤖 Diagnóstico Automático — Claude AI
 
-> *Análisis generado automáticamente al ${actionText} el issue · modelo \`claude-haiku-4-5\`*
+            > *Análisis generado automáticamente al ${actionText} el issue · modelo \`claude-3-5-haiku\`*
 
-${analysis.diagnosis}
+            ${analysis.diagnosis}
 
----
-<sub>Labels sugeridos: ${validLabels.length > 0 ? validLabels.map(l => '`' + l + '`').join(' ') : '_ninguno_'} · [Ver workflow](https://github.com/${context.repo.owner}/${context.repo.repo}/actions)</sub>`;
+            ---
+            <sub>Labels sugeridos: ${validLabels.length > 0 ? validLabels.map(l => '\`' + l + '\`').join(' ') : '_ninguno_'} · [Ver workflow](https://github.com/${context.repo.owner}/${context.repo.repo}/actions)</sub>`;
 
             await github.rest.issues.createComment({
               owner:        context.repo.owner,
